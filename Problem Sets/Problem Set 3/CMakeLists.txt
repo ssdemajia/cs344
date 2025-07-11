@@ -5,7 +5,7 @@
 # <email>   quantm@unist.ac.kr  kast.jo@googlemail.com msarahan@gmail.com</email>
 ############################################################################
 # minimum required cmake version
-cmake_minimum_required(VERSION 2.8)
+cmake_minimum_required(VERSION 3.21)
 find_package(CUDA QUIET REQUIRED)
 
 SET (compare_files compare.cpp)

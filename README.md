@@ -28,3 +28,4 @@ cmake ..
 make
 ```
 
+•	在“系统变量”中找到 PATH，点击编辑，添加 DLL 所在的完整路径（如 C:\opencv\build\x64\vc16\bin）。
