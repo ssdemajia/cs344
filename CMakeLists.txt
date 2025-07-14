@@ -52,7 +52,7 @@ if(CUDAToolkit_FOUND)
   set(CUDA_NVCC_FLAGS_DEBUG ${CUDA_NVCC_FLAGS_DEBUG} "-G")
 
   add_subdirectory("Problem Sets/Problem Set 1")
-  # add_subdirectory (HW2)
+  add_subdirectory("Problem Sets/Problem Set 2")
   # add_subdirectory (HW3)
   # add_subdirectory (HW4)
   # add_subdirectory (HW5)
