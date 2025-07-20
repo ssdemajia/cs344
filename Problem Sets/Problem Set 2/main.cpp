@@ -21,10 +21,13 @@ void your_gaussian_blur(const uchar4 * const h_inputImageRGBA, uchar4 * const d_
                         unsigned char *d_redBlurred,
                         unsigned char *d_greenBlurred,
                         unsigned char *d_blueBlurred,
+    float* d_redBlurred_float,
+    float* d_greenBlurred_float,
+    float* d_blueBlurred_float,
                         const int filterWidth);
 
 void allocateMemoryAndCopyToGPU(const size_t numRowsImage, const size_t numColsImage,
-                                const float* const h_filter, const size_t filterWidth);
+    const float* const h_filter, const float* const h_filter_vector, const size_t filterWidth);
 
 
 /*******  Begin main *********/
@@ -33,8 +36,10 @@ int main(int argc, char **argv) {
   uchar4 *h_inputImageRGBA,  *d_inputImageRGBA;
   uchar4 *h_outputImageRGBA, *d_outputImageRGBA;
   unsigned char *d_redBlurred, *d_greenBlurred, *d_blueBlurred;
+  float* d_redBlurred_float, * d_greenBlurred_float, * d_blueBlurred_float;
 
   float *h_filter;
+  float* h_filter_vector;
   int    filterWidth;
 
   std::string input_file;
@@ -75,14 +80,17 @@ int main(int argc, char **argv) {
   //load the image and give us our input and output pointers
   preProcess(&h_inputImageRGBA, &h_outputImageRGBA, &d_inputImageRGBA, &d_outputImageRGBA,
              &d_redBlurred, &d_greenBlurred, &d_blueBlurred,
-             &h_filter, &filterWidth, input_file);
+      &d_redBlurred_float, &d_greenBlurred_float, &d_blueBlurred_float,
+             &h_filter, &h_filter_vector, &filterWidth, input_file);
 
-  allocateMemoryAndCopyToGPU(numRows(), numCols(), h_filter, filterWidth);
+  allocateMemoryAndCopyToGPU(numRows(), numCols(), h_filter, h_filter_vector, filterWidth);
   GpuTimer timer;
   timer.Start();
   //call the students' code
   your_gaussian_blur(h_inputImageRGBA, d_inputImageRGBA, d_outputImageRGBA, numRows(), numCols(),
-                     d_redBlurred, d_greenBlurred, d_blueBlurred, filterWidth);
+      d_redBlurred, d_greenBlurred, d_blueBlurred, 
+      d_redBlurred_float, d_greenBlurred_float, d_blueBlurred_float,
+      filterWidth);
   timer.Stop();
   cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
   int err = printf("Your code ran in: %f msecs.\n", timer.Elapsed());

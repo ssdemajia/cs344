@@ -27,7 +27,10 @@ void preProcess(uchar4 **h_inputImageRGBA, uchar4 **h_outputImageRGBA,
                 unsigned char **d_redBlurred,
                 unsigned char **d_greenBlurred,
                 unsigned char **d_blueBlurred,
-                float **h_filter, int *filterWidth,
+    float** d_redBlurred_float,
+    float** d_greenBlurred_float,
+    float** d_blueBlurred_float,
+                float **h_filter, float** h_filter_vector, int *filterWidth,
                 const std::string &filename) {
 
   //make sure the context initializes ok
@@ -94,6 +97,18 @@ void preProcess(uchar4 **h_inputImageRGBA, uchar4 **h_outputImageRGBA,
     }
   }
 
+  // 生成单独的权重列向量
+  float filterVectorSum = 0.f;
+  *h_filter_vector = new float[blurKernelWidth];
+  for (int r = -blurKernelWidth / 2; r <= blurKernelWidth / 2; ++r) {
+      float filterValue = expf(-(float)(r * r) / (2.f * blurKernelSigma * blurKernelSigma));
+      (*h_filter_vector)[r + blurKernelWidth / 2] = filterValue;
+      filterVectorSum += filterValue;
+  }
+  float normalizationVectorFactor = 1.f / filterVectorSum;
+  for (int r = -blurKernelWidth / 2; r <= blurKernelWidth / 2; ++r) {
+      (*h_filter_vector)[r + blurKernelWidth / 2] *= normalizationVectorFactor;
+  }
   //blurred
   checkCudaErrors(cudaMalloc(d_redBlurred,    sizeof(unsigned char) * numPixels));
   checkCudaErrors(cudaMalloc(d_greenBlurred,  sizeof(unsigned char) * numPixels));
@@ -101,6 +116,13 @@ void preProcess(uchar4 **h_inputImageRGBA, uchar4 **h_outputImageRGBA,
   checkCudaErrors(cudaMemset(*d_redBlurred,   0, sizeof(unsigned char) * numPixels));
   checkCudaErrors(cudaMemset(*d_greenBlurred, 0, sizeof(unsigned char) * numPixels));
   checkCudaErrors(cudaMemset(*d_blueBlurred,  0, sizeof(unsigned char) * numPixels));
+
+  checkCudaErrors(cudaMalloc(d_redBlurred_float, sizeof(float) * numPixels));
+  checkCudaErrors(cudaMalloc(d_greenBlurred_float, sizeof(float) * numPixels));
+  checkCudaErrors(cudaMalloc(d_blueBlurred_float, sizeof(float) * numPixels));
+  checkCudaErrors(cudaMemset(*d_redBlurred_float, 0, sizeof(float) * numPixels));
+  checkCudaErrors(cudaMemset(*d_greenBlurred_float, 0, sizeof(float) * numPixels));
+  checkCudaErrors(cudaMemset(*d_blueBlurred_float, 0, sizeof(float) * numPixels));
 }
 
 void postProcess(const std::string& output_file, uchar4* data_ptr) {
