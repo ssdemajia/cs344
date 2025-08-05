@@ -31,6 +31,8 @@ void your_histogram_and_prefixsum(const float* const d_luminance,
 
 
 int main(int argc, char **argv) {
+  // load exr file
+  _putenv_s("OPENCV_IO_ENABLE_OPENEXR", "1");
   float *d_luminance;
   unsigned int *d_cdf;
 

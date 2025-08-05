@@ -14,7 +14,15 @@ void loadImageHDR(const std::string &filename,
                   float **imagePtr,
                   size_t *numRows, size_t *numCols)
 {
-    cv::Mat originImg = cv::imread(filename.c_str(), cv::IMREAD_COLOR | CV_LOAD_IMAGE_ANYDEPTH);
+    cv::Mat originImg;
+    try
+    {
+        originImg = cv::imread(filename.c_str(), cv::IMREAD_COLOR | cv::IMREAD_ANYDEPTH);
+    }
+    catch (const cv::Exception& exp)
+    {
+		std::cerr << "Failed to open: " << exp.what() << std::endl;
+    }
 
     cv::Mat image;
 
@@ -70,7 +78,7 @@ void loadImageRGBA(const std::string &filename,
   }
 
   cv::Mat imageRGBA;
-  cv::cvtColor(image, imageRGBA, CV_BGR2RGBA);
+  cv::cvtColor(image, imageRGBA, cv::ColorConversionCodes::COLOR_BGR2RGBA);
 
   *imagePtr = new uchar4[image.rows * image.cols];
 
@@ -95,7 +103,7 @@ void saveImageRGBA(const uchar4* const image,
   sizes[1] = numCols;
   cv::Mat imageRGBA(2, sizes, CV_8UC4, (void *)image);
   cv::Mat imageOutputBGR;
-  cv::cvtColor(imageRGBA, imageOutputBGR, CV_RGBA2BGR);
+  cv::cvtColor(imageRGBA, imageOutputBGR, cv::ColorConversionCodes::COLOR_RGBA2BGR);
   //output the image
   cv::imwrite(output_file.c_str(), imageOutputBGR);
 }
