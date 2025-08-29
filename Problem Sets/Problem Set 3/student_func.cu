@@ -81,6 +81,51 @@
 
 #include "utils.h"
 
+#define NUM_MIN_MAX_ROW 32
+
+__global__ void calculate_min_max(int numCols, int numRows, int numGroupX, const float* const d_logLuminance,
+    float* min_logLumGroups, float* max_logLumGroups)
+{
+    // 全局线程ID
+    int PosX = blockDim.x * blockIdx.x + threadIdx.x;
+    int PosY = blockDim.y * blockIdx.y + threadIdx.y;
+
+    if (PosX >= numCols || PosY >= numRows)
+    {
+        return;
+    }
+    __shared__ float SharedMinLogLum[NUM_MIN_MAX_ROW];
+    __shared__ float SharedMaxLogLum[NUM_MIN_MAX_ROW];
+    //if (blockIdx.x == 0 && blockIdx.y == 0)
+    //{
+    //    printf("threadIdx: %d, value: %f\n", threadIdx.x, d_logLuminance[PosX + PosY * numCols]);
+    //}
+	SharedMinLogLum[threadIdx.x] = d_logLuminance[PosX + PosY * numCols];
+    SharedMaxLogLum[threadIdx.x] = d_logLuminance[PosX + PosY * numCols];
+
+    __syncthreads();
+
+    for (int Step = 1; Step < NUM_MIN_MAX_ROW; Step <<= 1)
+    {
+        int PrevThreadIdx = max(0, (int)threadIdx.x - Step);
+        {
+			SharedMinLogLum[threadIdx.x] = min(SharedMinLogLum[threadIdx.x], SharedMinLogLum[PrevThreadIdx]);
+			SharedMaxLogLum[threadIdx.x] = max(SharedMaxLogLum[threadIdx.x], SharedMaxLogLum[PrevThreadIdx]);
+        }
+		__syncthreads();
+    }
+
+    //if (blockIdx.x == 0 && blockIdx.y == 0)
+    //{
+    //    printf("Shared threadIdx: %d, value: %f\n", threadIdx.x, SharedMinLogLum[threadIdx.x]);
+    //}
+	if (threadIdx.x == NUM_MIN_MAX_ROW - 1)
+	{
+        min_logLumGroups[blockIdx.x + blockIdx.y * numGroupX] = SharedMinLogLum[threadIdx.x];
+        max_logLumGroups[blockIdx.x + blockIdx.y * numGroupX] = SharedMaxLogLum[threadIdx.x];
+	}
+    
+}
 void your_histogram_and_prefixsum(const float* const d_logLuminance,
                                   unsigned int* const d_cdf,
                                   float &min_logLum,
@@ -89,16 +134,50 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
                                   const size_t numCols,
                                   const size_t numBins)
 {
-  //TODO
-  /*Here are the steps you need to implement
+    //TODO
+    /*Here are the steps you need to implement
     1) find the minimum and maximum value in the input logLuminance channel
-       store in min_logLum and max_logLum
+        store in min_logLum and max_logLum
     2) subtract them to find the range
     3) generate a histogram of all the values in the logLuminance channel using
-       the formula: bin = (lum[i] - lumMin) / lumRange * numBins
+        the formula: bin = (lum[i] - lumMin) / lumRange * numBins
     4) Perform an exclusive scan (prefix sum) on the histogram to get
-       the cumulative distribution of luminance values (this should go in the
-       incoming d_cdf pointer which already has been allocated for you)       */
+        the cumulative distribution of luminance values (this should go in the
+        incoming d_cdf pointer which already has been allocated for you)       */
 
+    {
+        size_t gridX = std::ceil((float)numCols / NUM_MIN_MAX_ROW);
+        size_t gridY = numRows;
+        const dim3 blockSize(NUM_MIN_MAX_ROW, 1, 1);
+        const dim3 gridSize(gridX, gridY, 1);
+        float* min_logLumGroups, *max_logLumGroups;
+        float* h_min_logLumGroups = new float[gridX * gridY];
+        float* h_max_logLumGroups = new float[gridX * gridY];
+        checkCudaErrors(cudaMalloc(&min_logLumGroups, sizeof(float) * gridX * gridY));
+        checkCudaErrors(cudaMalloc(&max_logLumGroups, sizeof(float) * gridX * gridY));
+        calculate_min_max << <gridSize, blockSize >> > (numCols, numRows, gridX, d_logLuminance, min_logLumGroups, max_logLumGroups);
+        cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+        checkCudaErrors(cudaMemcpy(h_min_logLumGroups, min_logLumGroups, sizeof(float) * gridX * gridY, cudaMemcpyDeviceToHost));
+        checkCudaErrors(cudaMemcpy(h_max_logLumGroups, max_logLumGroups, sizeof(float) * gridX * gridY, cudaMemcpyDeviceToHost));
 
+        min_logLum = std::numeric_limits<float>::max();
+        for (int i = 0; i < gridX * gridY; i++)
+        {
+			min_logLum = std::min(min_logLum, h_min_logLumGroups[i]);
+        }
+        max_logLum = std::numeric_limits<float>::lowest();
+        //std::cout << "group0: min:" << h_min_logLumGroups[0] << " max:" << h_max_logLumGroups[0] << std::endl;
+        //std::cout << "min_logLum: ";
+        for (int i = 0; i < gridX * gridY; i++)
+        {
+			//std::cout << h_max_logLumGroups[i] << " ";
+            max_logLum = std::max(max_logLum, h_max_logLumGroups[i]);
+        }
+        //std::cout << std::endl;
+        std::cout << "min_logLum: " << min_logLum << ", max_logLum: " << max_logLum << std::endl;
+        checkCudaErrors(cudaFree(min_logLumGroups));
+        checkCudaErrors(cudaFree(max_logLumGroups));
+		delete[] h_min_logLumGroups;
+        delete[] h_max_logLumGroups;
+    }
 }
