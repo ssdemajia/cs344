@@ -214,7 +214,8 @@ void postProcess(const std::string& output_file,
   float *d_cdf_normalized;
 
   checkCudaErrors(cudaMalloc(&d_cdf_normalized, sizeof(float) * numBins));
-
+  float* h_cdf_normalized = new float[numBins];
+  unsigned int* h_cdf = new unsigned int[numBins];
   //first normalize the cdf to a maximum value of 1
   //this is how we compress the range of the luminance channel
   normalize_cdf<<< (numBins + numThreads - 1) / numThreads,
@@ -223,7 +224,8 @@ void postProcess(const std::string& output_file,
                                   numBins);
 
   cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
-
+  checkCudaErrors(cudaMemcpy(h_cdf_normalized, d_cdf_normalized, sizeof(float) * numBins, cudaMemcpyDeviceToHost));
+  checkCudaErrors(cudaMemcpy(h_cdf, d_cdf__, sizeof(unsigned int) * numBins, cudaMemcpyDeviceToHost));
   //allocate memory for the output RGB channels
   float *h_red, *h_green, *h_blue;
   float *d_red, *d_green, *d_blue;

@@ -80,13 +80,13 @@
 */
 
 #include "utils.h"
-
 #define NUM_MIN_MAX_ROW 32
+#define NUM_PREFIX_ROW 32
 
 __global__ void calculate_min_max(int numCols, int numRows, int numGroupX, const float* const d_logLuminance,
     float* min_logLumGroups, float* max_logLumGroups)
 {
-    // ȫ���߳�ID
+    // ȫ���߳�ID
     int PosX = blockDim.x * blockIdx.x + threadIdx.x;
     int PosY = blockDim.y * blockIdx.y + threadIdx.y;
 
@@ -124,8 +124,133 @@ __global__ void calculate_min_max(int numCols, int numRows, int numGroupX, const
         min_logLumGroups[blockIdx.x + blockIdx.y * numGroupX] = SharedMinLogLum[threadIdx.x];
         max_logLumGroups[blockIdx.x + blockIdx.y * numGroupX] = SharedMaxLogLum[threadIdx.x];
 	}
-    
 }
+
+__global__ void calc_bin(int numCols, int numRows, const float* const d_logLuminance,
+    unsigned int* const d_cdf,
+    float min_logLumGroups, float lumRange, const size_t numBins)
+{
+    // ȫ���߳�ID
+    int PosX = blockDim.x * blockIdx.x + threadIdx.x;
+    int PosY = blockDim.y * blockIdx.y + threadIdx.y;
+
+    if (PosX >= numCols || PosY >= numRows)
+    {
+        return;
+    }
+    __shared__ float SharedLogLuminances[NUM_MIN_MAX_ROW];
+    __shared__ unsigned int SharedBin[NUM_MIN_MAX_ROW];
+	SharedLogLuminances[threadIdx.x] = d_logLuminance[PosX + PosY * numCols];
+    SharedBin[threadIdx.x] = -1;
+
+    __syncthreads();
+
+    unsigned int bin = (SharedLogLuminances[threadIdx.x] - min_logLumGroups) / lumRange * numBins;
+    SharedBin[threadIdx.x] = bin;
+    __syncthreads();
+ 
+   
+    if (threadIdx.x == NUM_MIN_MAX_ROW - 1)
+    {
+        for (int i = 0; i < NUM_MIN_MAX_ROW; i++)
+        {
+            if (SharedBin[threadIdx.x] != -1)
+            {
+                atomicAdd(d_cdf + SharedBin[i], 1);
+            }
+        }
+    }
+}
+
+__global__ void calc_prefix(unsigned int* const d_cdf, unsigned int* const d_GridSum, const size_t numBins)
+{
+    // ȫ���߳�ID
+    int PosX = blockDim.x * blockIdx.x + threadIdx.x;
+
+    if (PosX >= numBins)
+    {
+        return;
+    }
+    __shared__ float SharedCDF[NUM_PREFIX_ROW];
+
+    SharedCDF[threadIdx.x] = d_cdf[PosX];
+
+    __syncthreads();
+
+    for (int Step = 1; Step < NUM_PREFIX_ROW; Step <<= 1)
+    {
+        int PrevThreadIdx = (int)threadIdx.x - Step;
+        if (PrevThreadIdx >= 0)
+        {
+            SharedCDF[threadIdx.x] = SharedCDF[threadIdx.x] + SharedCDF[PrevThreadIdx];
+        }
+        __syncthreads();
+    }
+    __syncthreads();
+
+
+    if (threadIdx.x == 0)
+    {
+        d_GridSum[blockIdx.x] = SharedCDF[NUM_PREFIX_ROW - 1];
+        for (int i = 0; i < NUM_PREFIX_ROW; i++)
+        {
+            d_cdf[PosX + i] = SharedCDF[i];
+        }
+    }
+}
+
+__global__ void calc_grid_prefix(unsigned int* const d_GridSum, const size_t numBins)
+{
+    // ȫ���߳�ID
+    int PosX = blockDim.x * blockIdx.x + threadIdx.x;
+
+    if (PosX >= numBins)
+    {
+        return;
+    }
+    __shared__ float SharedGridSum[NUM_PREFIX_ROW];
+
+    SharedGridSum[threadIdx.x] = d_GridSum[PosX];
+
+    __syncthreads();
+
+    for (int Step = 1; Step < NUM_PREFIX_ROW; Step <<= 1)
+    {
+        int PrevThreadIdx = (int)threadIdx.x - Step;
+        if (PrevThreadIdx >= 0)
+        {
+            SharedGridSum[threadIdx.x] = SharedGridSum[threadIdx.x] + SharedGridSum[PrevThreadIdx];
+        }
+
+        __syncthreads();
+    }
+    __syncthreads();
+
+
+    if (threadIdx.x == 0)
+    {
+        for (int i = 0; i < NUM_PREFIX_ROW; i++)
+        {
+            d_GridSum[PosX + i] = SharedGridSum[i];
+        }
+    }
+}
+
+__global__ void calc_final_result(unsigned int* const d_GridSum, unsigned int* d_bin, unsigned int* d_cdf, const size_t numBins)
+{
+    // ȫ���߳�ID
+    int PosX = blockDim.x * blockIdx.x + threadIdx.x;
+
+    if (PosX >= numBins)
+    {
+        return;
+    }
+    unsigned int PrevBlockSum = blockIdx.x > 0 ? d_GridSum[blockIdx.x - 1] : 0;
+
+	d_cdf[PosX] = d_bin[PosX] - d_cdf[PosX] + PrevBlockSum;
+    //d_cdf[PosX] = blockIdx.x;
+}
+
 void your_histogram_and_prefixsum(const float* const d_logLuminance,
                                   unsigned int* const d_cdf,
                                   float &min_logLum,
@@ -174,10 +299,98 @@ void your_histogram_and_prefixsum(const float* const d_logLuminance,
             max_logLum = std::max(max_logLum, h_max_logLumGroups[i]);
         }
         //std::cout << std::endl;
-        std::cout << "min_logLum: " << min_logLum << ", max_logLum: " << max_logLum << std::endl;
+        //std::cout << "min_logLum: " << min_logLum << ", max_logLum: " << max_logLum << std::endl;
         checkCudaErrors(cudaFree(min_logLumGroups));
         checkCudaErrors(cudaFree(max_logLumGroups));
 		delete[] h_min_logLumGroups;
         delete[] h_max_logLumGroups;
     }
+
+    // ����bin�����ݣ��Ȳ�ֱ�Ӵ浽d_cdf��
+    unsigned int* d_bin;
+    {
+        checkCudaErrors(cudaMalloc(&d_bin, sizeof(unsigned int) * numBins));
+		checkCudaErrors(cudaMemset(d_bin, 0, sizeof(unsigned int) * numBins));
+    }
+
+    {
+        float lumRange = max_logLum - min_logLum;
+        size_t gridX = std::ceil((float)numCols / NUM_MIN_MAX_ROW);
+        size_t gridY = numRows;
+        const dim3 blockSize(NUM_MIN_MAX_ROW, 1, 1);
+        const dim3 gridSize(gridX, gridY, 1);
+		//unsigned int* h_debug_cdf = new unsigned int[numBins];
+        calc_bin << <gridSize, blockSize >> > (numCols, numRows, d_logLuminance, d_bin, min_logLum, lumRange, numBins);
+        cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+        //checkCudaErrors(cudaMemcpy(h_debug_cdf, d_bin, sizeof(unsigned int) * numBins, cudaMemcpyDeviceToHost));
+        checkCudaErrors(cudaMemcpy(d_cdf, d_bin, sizeof(unsigned int) * numBins, cudaMemcpyDeviceToDevice));
+        //std::cout << "bin: ";
+        //for (int i = 0; i < NUM_MIN_MAX_ROW; i++)
+        //{
+        //    std::cout << h_debug_cdf[i] << " ";
+        //}
+        //std::cout << std::endl;
+        //delete h_debug_cdf;
+    }
+
+    
+    {
+        size_t gridX = std::ceil((float)numBins / NUM_PREFIX_ROW);
+        const dim3 blockSize(NUM_PREFIX_ROW, 1, 1);
+        const dim3 gridSize(gridX, 1, 1);
+
+        unsigned int* d_GridSum;
+        checkCudaErrors(cudaMalloc(&d_GridSum, sizeof(unsigned int) * gridX));
+        checkCudaErrors(cudaMemset(d_GridSum, 0, sizeof(unsigned int) * gridX));
+        //unsigned int* h_debug_prefix_bin = new unsigned int[numBins];
+        //unsigned int* h_debug_prefix_bin_sum = new unsigned int[gridX];
+        calc_prefix << <gridSize, blockSize >> > (d_bin, d_GridSum, numBins);
+        cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+  //      checkCudaErrors(cudaMemcpy(h_debug_prefix_bin, d_bin, sizeof(unsigned int) * numBins, cudaMemcpyDeviceToHost));
+  //      checkCudaErrors(cudaMemcpy(h_debug_prefix_bin_sum, d_GridSum, sizeof(unsigned int) * gridX, cudaMemcpyDeviceToHost));
+		//std::cout << "prefix bin: ";
+  //      for (int i = 0; i < numBins; i++)
+  //      {
+  //          std::cout << h_debug_prefix_bin[i] << " ";
+  //      }
+  //        delete h_debug_prefix_bin;
+  //      std::cout << "\nbin Sum: ";
+  //      for (int i = 0; i < gridX; i++)
+  //      {
+  //          std::cout << h_debug_prefix_bin_sum[i] << " ";
+  //      }
+  //      std::cout << std::endl;
+        {
+            // ����grid sum��ǰ׺��
+            dim3 blockSumSize(gridX, 1, 1);
+            dim3 gridSumSize(1, 1, 1);
+            calc_grid_prefix << <gridSumSize, blockSumSize >> > (d_GridSum, gridX);
+            cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+            //checkCudaErrors(cudaMemcpy(h_debug_prefix_bin_sum, d_GridSum, sizeof(unsigned int) * gridX, cudaMemcpyDeviceToHost));
+            //std::cout << "\nbin Sum[P]: ";
+            //for (int i = 0; i < gridX; i++)
+            //{
+            //    std::cout << h_debug_prefix_bin_sum[i] << " ";
+            //}
+            //std::cout << std::endl;
+        }
+
+
+        {
+            //unsigned int* h_debug_cdf = new unsigned int[numBins];
+            calc_final_result << <gridSize, blockSize >> > (d_GridSum, d_bin, d_cdf, numBins);
+            cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+            //checkCudaErrors(cudaMemcpy(h_debug_cdf, d_cdf, sizeof(unsigned int)* numBins, cudaMemcpyDeviceToHost));
+            //std::cout << "prefix cdf: ";
+            //for (int i = 0; i < numBins; i++)
+            //{
+            //    std::cout << h_debug_cdf[i] << " ";
+            //}
+            //std::cout << std::endl;
+        }
+
+        
+    }
+
+    checkCudaErrors(cudaFree(d_bin));
 }
