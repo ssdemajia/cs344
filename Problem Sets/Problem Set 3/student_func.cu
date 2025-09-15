@@ -164,7 +164,6 @@ __global__ void calc_bin(int numCols, int numRows, const float* const d_logLumin
 
 __global__ void calc_prefix(unsigned int* const d_cdf, unsigned int* const d_GridSum, const size_t numBins)
 {
-    // ȫ���߳�ID
     int PosX = blockDim.x * blockIdx.x + threadIdx.x;
 
     if (PosX >= numBins)
