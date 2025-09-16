@@ -26,7 +26,18 @@
 
 
 #include "utils.h"
+#define NUM_BLOCK_X 256
+__global__ void AtomicHistogram(const unsigned int* const vals, //INPUT
+	unsigned int* const histo,      //OUPUT
+	int numVals)
+{
+	int i = blockIdx.x * blockDim.x + threadIdx.x;
 
+	if (i < numVals)
+	{
+		atomicAdd(&histo[vals[i]], 1);
+	}
+}
 __global__
 void yourHisto(const unsigned int* const vals, //INPUT
                unsigned int* const histo,      //OUPUT
@@ -45,10 +56,17 @@ void computeHistogram(const unsigned int* const d_vals, //INPUT
                       const unsigned int numBins,
                       const unsigned int numElems)
 {
-  //TODO Launch the yourHisto kernel
+	//TODO Launch the yourHisto kernel
 
-  //if you want to use/launch more than one kernel,
-  //feel free
+	//if you want to use/launch more than one kernel,
+	//feel free
 
-  cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
+	{
+		size_t blockX = NUM_BLOCK_X;
+		size_t gridX = (numElems + blockX - 1) / blockX;
+		const dim3 blockSize(blockX, 1, 1);
+		const dim3 gridSize(gridX, 1, 1);
+		AtomicHistogram << <gridSize, blockSize >> > (d_vals, d_histo, numElems);
+	}
+	cudaDeviceSynchronize(); checkCudaErrors(cudaGetLastError());
 }

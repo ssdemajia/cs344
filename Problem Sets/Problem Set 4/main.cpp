@@ -28,7 +28,7 @@ void your_sort(unsigned int* const inputVals,
                unsigned int* const inputPos,
                unsigned int* const outputVals,
                unsigned int* const outputPos,
-               const size_t numElems);
+               size_t numElems);
 
 int main(int argc, char **argv) {
   unsigned int *inputVals;
