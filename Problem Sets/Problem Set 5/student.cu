@@ -38,18 +38,7 @@ __global__ void AtomicHistogram(const unsigned int* const vals, //INPUT
 		atomicAdd(&histo[vals[i]], 1);
 	}
 }
-__global__
-void yourHisto(const unsigned int* const vals, //INPUT
-               unsigned int* const histo,      //OUPUT
-               int numVals)
-{
-  //TODO fill in this kernel to calculate the histogram
-  //as quickly as possible
 
-  //Although we provide only one kernel skeleton,
-  //feel free to use more if it will help you
-  //write faster code
-}
 
 void computeHistogram(const unsigned int* const d_vals, //INPUT
                       unsigned int* const d_histo,      //OUTPUT
