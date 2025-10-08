@@ -67,6 +67,67 @@
 #include "utils.h"
 #include <thrust/host_vector.h>
 
+#define NUM_BLOCK_X 64
+
+void computeG(const unsigned char* const channel,
+    float* const g,
+    const size_t numColsSource,
+    const std::vector<uint2>& interiorPixelList);
+
+
+__global__ void computeIteration(float* dst, //INPUT
+    unsigned char* interiorPixels,
+    unsigned char* borderPixels,
+    const uint2* interiorPixelList,
+    const size_t numColsSource,
+    const size_t numVals,
+    const float* const f,
+    const float* const g,
+    float* const f_next)
+{
+    int i = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (i < numVals)
+    {
+        float blendedSum = 0.f;
+        float borderSum = 0.f;
+
+        uint2 coord = interiorPixelList[i];
+        unsigned int offset = coord.x * numColsSource + coord.y;
+        if (interiorPixels[offset - 1]) {
+            blendedSum += f[offset - 1];
+        }
+        else {
+            borderSum += dst[offset - 1];
+        }
+
+        if (interiorPixels[offset + 1]) {
+            blendedSum += f[offset + 1];
+        }
+        else {
+            borderSum += dst[offset + 1];
+        }
+
+        if (interiorPixels[offset - numColsSource]) {
+            blendedSum += f[offset - numColsSource];
+        }
+        else {
+            borderSum += dst[offset - numColsSource];
+        }
+
+        if (interiorPixels[offset + numColsSource]) {
+            blendedSum += f[offset + numColsSource];
+        }
+        else {
+            borderSum += dst[offset + numColsSource];
+        }
+
+        float f_next_val = (blendedSum + borderSum + g[offset]) / 4.f;
+
+        f_next[offset] = min(255.f, max(0.f, f_next_val)); //clip to [0, 255]
+    }
+}
+
 void your_blend(const uchar4* const h_sourceImg,  //IN
                 const size_t numRowsSource, const size_t numColsSource,
                 const uchar4* const h_destImg, //IN
@@ -110,4 +171,225 @@ void your_blend(const uchar4* const h_sourceImg,  //IN
 
       to catch any errors that happened while executing the kernel.
   */
+    // 创建Mask，非白区域
+    size_t srcSize = numRowsSource * numColsSource;
+    std::vector<unsigned char> mask(srcSize);
+
+    for (int i = 0; i < srcSize; ++i) {
+        mask[i] = (h_sourceImg[i].x + h_sourceImg[i].y + h_sourceImg[i].z < 3 * 255) ? 1 : 0;
+    }
+
+    // 边缘像素
+    std::vector<unsigned char> borderPixels(srcSize);
+    // 内部像素
+    std::vector<unsigned char> strictInteriorPixels(srcSize);
+
+    std::vector<uint2> interiorPixelList;
+
+    //the source region in the homework isn't near an image boundary, so we can
+    //simplify the conditionals a little...
+    for (size_t r = 1; r < numRowsSource - 1; ++r) {
+        for (size_t c = 1; c < numColsSource - 1; ++c) {
+            if (mask[r * numColsSource + c]) {
+                if (mask[(r - 1) * numColsSource + c] && mask[(r + 1) * numColsSource + c] &&
+                    mask[r * numColsSource + c - 1] && mask[r * numColsSource + c + 1]) {
+                    strictInteriorPixels[r * numColsSource + c] = 1;
+                    borderPixels[r * numColsSource + c] = 0;
+                    interiorPixelList.push_back(make_uint2(r, c));
+                }
+                else {
+                    strictInteriorPixels[r * numColsSource + c] = 0;
+                    borderPixels[r * numColsSource + c] = 1;
+                }
+            }
+            else {
+                strictInteriorPixels[r * numColsSource + c] = 0;
+                borderPixels[r * numColsSource + c] = 0;
+
+            }
+        }
+    }
+    unsigned char* d_InteriorPixels;
+    unsigned char* d_borderPixels;
+    uint2* d_interiorPixelList;
+    checkCudaErrors(cudaMalloc(&d_InteriorPixels, srcSize * sizeof(unsigned char)));
+    checkCudaErrors(cudaMemcpy(d_InteriorPixels, strictInteriorPixels.data(), srcSize * sizeof(unsigned char), cudaMemcpyHostToDevice));
+
+    checkCudaErrors(cudaMalloc(&d_borderPixels, srcSize * sizeof(unsigned char)));
+    checkCudaErrors(cudaMemcpy(d_borderPixels, borderPixels.data(), srcSize * sizeof(unsigned char), cudaMemcpyHostToDevice));
+
+    checkCudaErrors(cudaMalloc(&d_interiorPixelList, interiorPixelList.size() * sizeof(uint2)));
+    checkCudaErrors(cudaMemcpy(d_interiorPixelList, interiorPixelList.data(), interiorPixelList.size() * sizeof(uint2), cudaMemcpyHostToDevice));
+
+    //split the source and destination images into their respective
+    //channels
+    std::vector<unsigned char> red_src(srcSize);
+    std::vector<unsigned char> blue_src(srcSize);
+    std::vector<unsigned char> green_src(srcSize);
+
+    for (int i = 0; i < srcSize; ++i) {
+        red_src[i] = h_sourceImg[i].x;
+        blue_src[i] = h_sourceImg[i].y;
+        green_src[i] = h_sourceImg[i].z;
+    }
+
+    float* red_dst = new float[srcSize];
+    float* blue_dst = new float[srcSize];
+    float* green_dst = new float[srcSize];
+
+    for (int i = 0; i < srcSize; ++i) {
+        red_dst[i] = h_destImg[i].x;
+        blue_dst[i] = h_destImg[i].y;
+        green_dst[i] = h_destImg[i].z;
+    }
+
+    float* d_red_dst;
+    float* d_blue_dst;
+    float* d_green_dst;
+    checkCudaErrors(cudaMalloc(&d_red_dst, srcSize * sizeof(float)));
+    checkCudaErrors(cudaMemcpy(d_red_dst, red_dst, srcSize * sizeof(float), cudaMemcpyHostToDevice));
+
+    checkCudaErrors(cudaMalloc(&d_blue_dst, srcSize * sizeof(float)));
+    checkCudaErrors(cudaMemcpy(d_blue_dst, blue_dst, srcSize * sizeof(float), cudaMemcpyHostToDevice));
+
+    checkCudaErrors(cudaMalloc(&d_green_dst, srcSize * sizeof(float)));
+    checkCudaErrors(cudaMemcpy(d_green_dst, green_dst, srcSize * sizeof(float), cudaMemcpyHostToDevice));
+
+    //next we'll precompute the g term - it never changes, no need to recompute every iteration
+    std::vector<float> g_red(srcSize);
+    std::vector<float> g_blue(srcSize);
+    std::vector<float> g_green(srcSize);
+
+    memset(g_red.data(), 0, srcSize * sizeof(float));
+    memset(g_blue.data(), 0, srcSize * sizeof(float));
+    memset(g_green.data(), 0, srcSize * sizeof(float));
+
+    computeG(red_src.data(), g_red.data(), numColsSource, interiorPixelList);
+    computeG(blue_src.data(), g_blue.data(), numColsSource, interiorPixelList);
+    computeG(green_src.data(), g_green.data(), numColsSource, interiorPixelList);
+
+    float* d_g_red;
+    float* d_g_blue;
+    float* d_g_green;
+    checkCudaErrors(cudaMalloc(&d_g_red, srcSize * sizeof(float)));
+    checkCudaErrors(cudaMemcpy(d_g_red, g_red.data(), srcSize * sizeof(float), cudaMemcpyHostToDevice));
+    
+    checkCudaErrors(cudaMalloc(&d_g_blue, srcSize * sizeof(float)));
+    checkCudaErrors(cudaMemcpy(d_g_blue, g_blue.data(), srcSize * sizeof(float), cudaMemcpyHostToDevice));
+
+    checkCudaErrors(cudaMalloc(&d_g_green, srcSize * sizeof(float)));
+    checkCudaErrors(cudaMemcpy(d_g_green, g_green.data(), srcSize * sizeof(float), cudaMemcpyHostToDevice));
+
+    //for each color channel we'll need two buffers and we'll ping-pong between them
+    float* blendedValsRed_1 = new float[srcSize];
+    float* blendedValsRed_2 = new float[srcSize];
+
+    float* blendedValsBlue_1 = new float[srcSize];
+    float* blendedValsBlue_2 = new float[srcSize];
+
+    float* blendedValsGreen_1 = new float[srcSize];
+    float* blendedValsGreen_2 = new float[srcSize];
+
+    //IC is the source image, copy over
+    for (size_t i = 0; i < srcSize; ++i) {
+        blendedValsRed_1[i] = red_src[i];
+        blendedValsRed_2[i] = red_src[i];
+        blendedValsBlue_1[i] = blue_src[i];
+        blendedValsBlue_2[i] = blue_src[i];
+        blendedValsGreen_1[i] = green_src[i];
+        blendedValsGreen_2[i] = green_src[i];
+    }
+
+    float* d_blendedValsRed_1;
+    float* d_blendedValsRed_2;
+
+    float* d_blendedValsBlue_1;
+    float* d_blendedValsBlue_2;
+
+    float* d_blendedValsGreen_1;
+    float* d_blendedValsGreen_2;
+
+    checkCudaErrors(cudaMalloc(&d_blendedValsRed_1, srcSize * sizeof(float)));
+    checkCudaErrors(cudaMemcpy(d_blendedValsRed_1, blendedValsRed_1, srcSize * sizeof(float), cudaMemcpyHostToDevice));
+
+    checkCudaErrors(cudaMalloc(&d_blendedValsRed_2, srcSize * sizeof(float)));
+    checkCudaErrors(cudaMemcpy(d_blendedValsRed_2, blendedValsRed_2, srcSize * sizeof(float), cudaMemcpyHostToDevice));
+
+    checkCudaErrors(cudaMalloc(&d_blendedValsBlue_1, srcSize * sizeof(float)));
+    checkCudaErrors(cudaMemcpy(d_blendedValsBlue_1, blendedValsBlue_1, srcSize * sizeof(float), cudaMemcpyHostToDevice));
+
+    checkCudaErrors(cudaMalloc(&d_blendedValsBlue_2, srcSize * sizeof(float)));
+    checkCudaErrors(cudaMemcpy(d_blendedValsBlue_2, blendedValsBlue_2, srcSize * sizeof(float), cudaMemcpyHostToDevice));
+
+    checkCudaErrors(cudaMalloc(&d_blendedValsGreen_1, srcSize * sizeof(float)));
+    checkCudaErrors(cudaMemcpy(d_blendedValsGreen_1, blendedValsGreen_1, srcSize * sizeof(float), cudaMemcpyHostToDevice));
+
+    checkCudaErrors(cudaMalloc(&d_blendedValsGreen_2, srcSize * sizeof(float)));
+    checkCudaErrors(cudaMemcpy(d_blendedValsGreen_2, blendedValsGreen_2, srcSize * sizeof(float), cudaMemcpyHostToDevice));
+
+    size_t numElems = interiorPixelList.size();
+    size_t blockX = NUM_BLOCK_X;
+    size_t gridX = (numElems + blockX - 1) / blockX;
+    const dim3 blockSize(blockX, 1, 1);
+    const dim3 gridSize(gridX, 1, 1);
+
+    const size_t numIterations = 800;
+    for (size_t i = 0; i < numIterations; ++i) {
+        computeIteration<<<gridSize, blockSize>>>(d_red_dst, d_InteriorPixels, d_borderPixels,
+            d_interiorPixelList, numColsSource, numElems, d_blendedValsRed_1, d_g_red,
+            d_blendedValsRed_2);
+
+        std::swap(d_blendedValsRed_1, d_blendedValsRed_2);
+    }
+
+    for (size_t i = 0; i < numIterations; ++i) {
+        computeIteration<<<gridSize, blockSize>>>(d_blue_dst, d_InteriorPixels, d_borderPixels,
+            d_interiorPixelList, numColsSource, numElems, d_blendedValsBlue_1, d_g_blue,
+            d_blendedValsBlue_2);
+        std::swap(d_blendedValsBlue_1, d_blendedValsBlue_2);
+    }
+
+    for (size_t i = 0; i < numIterations; ++i) {
+        computeIteration<<<gridSize, blockSize>>>(d_green_dst, d_InteriorPixels, d_borderPixels,
+            d_interiorPixelList, numColsSource, numElems, d_blendedValsGreen_1, d_g_green,
+            d_blendedValsGreen_2);
+        std::swap(d_blendedValsGreen_1, d_blendedValsGreen_2);
+    }
+
+    memcpy(h_blendedImg, h_destImg, sizeof(uchar4) * srcSize);
+	checkCudaErrors(cudaMemcpy(blendedValsRed_2, d_blendedValsRed_1, srcSize * sizeof(float), cudaMemcpyDeviceToHost));
+    checkCudaErrors(cudaMemcpy(blendedValsBlue_2, d_blendedValsBlue_1, srcSize * sizeof(float), cudaMemcpyDeviceToHost));
+    checkCudaErrors(cudaMemcpy(blendedValsGreen_2, d_blendedValsGreen_1, srcSize * sizeof(float), cudaMemcpyDeviceToHost));
+
+
+    //copy computed values for the interior into the output
+    for (size_t i = 0; i < interiorPixelList.size(); ++i) {
+        uint2 coord = interiorPixelList[i];
+
+        unsigned int offset = coord.x * numColsSource + coord.y;
+
+        h_blendedImg[offset].x = blendedValsRed_2[offset];
+        h_blendedImg[offset].y = blendedValsBlue_2[offset];
+        h_blendedImg[offset].z = blendedValsGreen_2[offset];
+    }
+
+    checkCudaErrors(cudaFree(d_red_dst));
+    checkCudaErrors(cudaFree(d_blue_dst));
+    checkCudaErrors(cudaFree(d_green_dst));
+
+    checkCudaErrors(cudaFree(d_InteriorPixels));
+    checkCudaErrors(cudaFree(d_borderPixels));
+    checkCudaErrors(cudaFree(d_interiorPixelList));
+
+    checkCudaErrors(cudaFree(d_blendedValsRed_1));
+    checkCudaErrors(cudaFree(d_blendedValsBlue_1));
+    checkCudaErrors(cudaFree(d_blendedValsGreen_1));
+
+    checkCudaErrors(cudaFree(d_blendedValsRed_2));
+    checkCudaErrors(cudaFree(d_blendedValsBlue_2));
+    checkCudaErrors(cudaFree(d_blendedValsGreen_2));
+
+    checkCudaErrors(cudaFree(d_g_red));
+    checkCudaErrors(cudaFree(d_g_blue));
+    checkCudaErrors(cudaFree(d_g_green));
 }
